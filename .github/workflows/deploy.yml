@@ -64,6 +64,13 @@ jobs:
                     --format sarif --target './**/*.cls' --category "Design,Best Practices,Performance" --outfile 'apexScanResults.sarif'  
                     cd ..
 
+          - name: Create Code Scan Summary
+            run: |
+                 echo "## 🔍 Code Scan Summary (PMD)" >> $GITHUB_STEP_SUMMARY
+                 echo "Scanner executed on delta package." >> $GITHUB_STEP_SUMMARY
+                 echo "" >> $GITHUB_STEP_SUMMARY
+                 echo "**SARIF file generated:** apexScanResults.sarif" >> $GITHUB_STEP_SUMMARY
+
           # Now we upload the .sarif file as explained in the previous step
          
 
@@ -83,24 +90,18 @@ jobs:
                 --json > test-results.json
 
           # sf force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunLocalTests  --json > test-results.json
-
+          - name: Create Test Summary
+            run: |
+                echo "## 🧪 Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+                echo "All local tests executed in validation mode." >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "**Raw JSON report saved as:** test-results.json" >> $GITHUB_STEP_SUMMARY
 
           - name: Upload test results
             uses: actions/upload-artifact@v4
             with:
               name: test-results
               path: test-results.json
-
-          - name: Convert test results to HTML
-            run: |
-               npm install -g junit-report-builder
-               node scripts/convertToHtml.js
-
-          - name: Upload HTML Test Report
-            uses: actions/upload-artifact@v4
-            with:
-              name: test-report
-              path: test-report.html
 
 
 
