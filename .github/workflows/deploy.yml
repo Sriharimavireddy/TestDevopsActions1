@@ -1,3 +1,4 @@
+# 
 name: Deploy to MS environment on push to main
 
 on:
@@ -58,8 +59,10 @@ jobs:
           - name: 'Scan code'
             run: |
                   cd changed-sources
-                  sf scanner:run --format sarif --target './**/*.cls' --category "Design,Best Practices,Performance" --outfile 'apexScanResults.sarif'  
-                  cd ..
+                  sf scanner:run \
+                    --engine pmd \
+                    --format sarif --target './**/*.cls' --category "Design,Best Practices,Performance" --outfile 'apexScanResults.sarif'  
+                    cd ..
 
           # Now we upload the .sarif file as explained in the previous step
          
@@ -87,3 +90,18 @@ jobs:
             with:
               name: test-results
               path: test-results.json
+
+          - name: Convert test results to HTML
+            run: |
+               npm install -g junit-report-builder
+               node scripts/convertToHtml.js
+
+          - name: Upload HTML Test Report
+            uses: actions/upload-artifact@v4
+            with:
+              name: test-report
+              path: test-report.html
+
+
+
+              
