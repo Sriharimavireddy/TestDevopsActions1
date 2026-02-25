@@ -66,6 +66,13 @@ jobs:
             uses: github/codeql-action/upload-sarif@v3
             with:
               sarif_file: changed-sources/apexScanResults.sarif
+
+          - name: Upload SARIF as artifact
+            uses: actions/upload-artifact@v4
+            with:
+              name: apex-scan-results
+              path: changed-sources/apexScanResults.sarif
+
           #sf project deploy start --source-dir changed-sources/force-app --test-level RunLocalTests
           - name: Deploy changes 
             run: |
