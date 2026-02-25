@@ -73,7 +73,13 @@ jobs:
           #sf project deploy start --source-dir changed-sources/force-app --test-level RunLocalTests
           - name: Deploy changes 
             run: |
-                  sf force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunLocalTests  --json > test-results.json
+              sf project deploy start \
+                --source-dir "changed-sources/force-app" \
+                --test-level RunLocalTests \
+                --dry-run \
+                --json > test-results.json
+
+          # sf force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunLocalTests  --json > test-results.json
 
 
           - name: Upload test results
