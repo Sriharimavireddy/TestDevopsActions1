@@ -1,0 +1,181 @@
+# 
+name: Deploy to MS environment on push to main
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'force-app/**'
+
+jobs:
+  codescan-check-pull-request:
+      runs-on: ubuntu-latest
+      environment: Srims
+      steps:
+          - uses: actions/setup-node@v4
+            with:
+              node-version: '18'
+          - name: 'Checkout source code'
+            uses: actions/checkout@v4
+            with:
+              fetch-depth: '2'
+                
+          # Now Install Salesforce CLI
+          - name: 'Install sfdx'
+            run: npm install @salesforce/cli --global
+          - name: 'Installing sfdx git delta'
+            run: | 
+                echo Y | sfdx plugins:install sfdx-git-delta
+                sf plugins
+
+           # Install java as it is required for the next step
+          - name: 'Installing java'
+            run: |
+                sudo apt-get update
+                sudo apt install default-jdk
+
+          # Install SFDX scanner
+          - name: 'Installing SFDX scanner'
+            run: sf plugins:install @salesforce/sfdx-scanner
+
+          - name: 'Create delta packages'
+            run: | 
+                mkdir changed-sources
+                sf sgd source delta --to "HEAD" --from "HEAD~1" --output changed-sources/ --generate-delta --source force-app/
+                echo "[INFO] Diff generated"
+
+          - name: 'Upload delta package as artifact'
+            uses: actions/upload-artifact@v4
+            with:
+              name: 'delta-package'
+              path: changed-sources/
+                
+          - name: 'Deploy to environment with running all local tests'
+            run: |
+                echo "${{ secrets.SF_JWT_SECRET_KEY }}" > server.key
+                sf org login jwt --username ${{ secrets.SF_USERNAME }} --jwt-key-file server.key --client-id ${{ secrets.SF_CLIENT_CONSUMER_ID }} --instance-url ${{ vars.SF_INSTANCE_URL }} --set-default
+
+
+          - name: 'Scan code'
+            run: |
+                  cd changed-sources
+                  sf scanner:run \
+                    --engine pmd \
+                    --format sarif \
+                    --target './**/*.cls' \
+                    --category "Design,Best Practices,Performance" \
+                    --outfile 'apexScanResults.sarif'
+                  cd ..
+
+          - name: Create Code Scan Summary
+            if: always()
+            run: |
+                 echo "## Code Scan Summary (PMD)" >> $GITHUB_STEP_SUMMARY
+                 echo "" >> $GITHUB_STEP_SUMMARY
+                 SARIF_FILE="changed-sources/apexScanResults.sarif"
+                 if [ -f "$SARIF_FILE" ]; then
+                   TOTAL=$(jq '[.runs[].results | length] | add // 0' "$SARIF_FILE")
+                   ERROR_COUNT=$(jq '[.runs[].results[] | select(.level == "error")] | length // 0' "$SARIF_FILE" 2>/dev/null)
+                   WARN_COUNT=$(jq '[.runs[].results[] | select(.level == "warning")] | length // 0' "$SARIF_FILE" 2>/dev/null)
+                   echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+                   echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+                   echo "| Errors | $ERROR_COUNT |" >> $GITHUB_STEP_SUMMARY
+                   echo "| Warnings | $WARN_COUNT |" >> $GITHUB_STEP_SUMMARY
+                   echo "| Total Issues | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+                   echo "" >> $GITHUB_STEP_SUMMARY
+                   if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
+                     echo "### Issues Found" >> $GITHUB_STEP_SUMMARY
+                     echo "| File | Rule | Message |" >> $GITHUB_STEP_SUMMARY
+                     echo "|------|------|---------|" >> $GITHUB_STEP_SUMMARY
+                     jq -r '.runs[].results[] | "| \(.locations[0].physicalLocation.artifactLocation.uri // "unknown") | \(.ruleId // "unknown") | \(.message.text | gsub("\n"; " ") | .[0:100]) |"' "$SARIF_FILE" >> $GITHUB_STEP_SUMMARY 2>/dev/null
+                     echo "" >> $GITHUB_STEP_SUMMARY
+                   fi
+                 else
+                   echo "No SARIF file found — scanner may have found no .cls files to scan." >> $GITHUB_STEP_SUMMARY
+                 fi
+
+          # Now we upload the .sarif file as explained in the previous step
+         
+
+          - name: Upload SARIF as artifact
+            uses: actions/upload-artifact@v4
+            with:
+              name: apex-scan-results
+              path: changed-sources/apexScanResults.sarif
+
+          #sf project deploy start --source-dir changed-sources/force-app --test-level RunLocalTests
+          - name: Deploy changes 
+            run: |
+              sf project deploy start \
+                --source-dir "changed-sources/force-app" \
+                --test-level RunLocalTests \
+                --dry-run \
+                --json > test-results.json
+
+          - name: Create Test Summary
+            if: always()
+            run: |
+                echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+
+                if [ ! -f test-results.json ]; then
+                  echo "No test results file found — deploy step may have failed before producing output." >> $GITHUB_STEP_SUMMARY
+                  exit 0
+                fi
+
+                STATUS=$(jq -r '.status // "unknown"' test-results.json)
+                echo "**Deploy Status:** $STATUS" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+
+                # Component summary
+                DEPLOYED=$(jq '.result.numberComponentsDeployed // 0' test-results.json)
+                ERRORS=$(jq '.result.numberComponentErrors // 0' test-results.json)
+                TOTAL=$(jq '.result.numberComponentsTotal // 0' test-results.json)
+                echo "### Components" >> $GITHUB_STEP_SUMMARY
+                echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+                echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+                echo "| Total | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+                echo "| Deployed | $DEPLOYED |" >> $GITHUB_STEP_SUMMARY
+                echo "| Errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+
+                # Test results summary
+                TESTS_RUN=$(jq '.result.numberTestsCompleted // 0' test-results.json)
+                TESTS_TOTAL=$(jq '.result.numberTestsTotal // 0' test-results.json)
+                TESTS_FAILED=$(jq '.result.numberTestErrors // 0' test-results.json)
+                echo "### Test Results" >> $GITHUB_STEP_SUMMARY
+                echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+                echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+                echo "| Total | $TESTS_TOTAL |" >> $GITHUB_STEP_SUMMARY
+                echo "| Passed | $TESTS_RUN |" >> $GITHUB_STEP_SUMMARY
+                echo "| Failed | $TESTS_FAILED |" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+
+                # List failed tests if any
+                FAIL_COUNT=$(jq '.result.details.runTestResult.failures | length // 0' test-results.json 2>/dev/null)
+                if [ "$FAIL_COUNT" -gt 0 ] 2>/dev/null; then
+                  echo "### Failed Tests" >> $GITHUB_STEP_SUMMARY
+                  echo "| Class | Method | Message |" >> $GITHUB_STEP_SUMMARY
+                  echo "|-------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+                  jq -r '.result.details.runTestResult.failures[] | "| \(.name) | \(.methodName) | \(.message | gsub("\n"; " ") | .[0:100]) |"' test-results.json >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                fi
+
+                # List component deploy errors if any
+                if [ "$ERRORS" -gt 0 ] 2>/dev/null; then
+                  echo "### Deploy Errors" >> $GITHUB_STEP_SUMMARY
+                  echo "| Component | Problem |" >> $GITHUB_STEP_SUMMARY
+                  echo "|-----------|---------|" >> $GITHUB_STEP_SUMMARY
+                  jq -r '.result.details.componentFailures[] | "| \(.fullName) | \(.problem | gsub("\n"; " ") | .[0:120]) |"' test-results.json >> $GITHUB_STEP_SUMMARY 2>/dev/null
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                fi
+
+          - name: Upload test results
+            uses: actions/upload-artifact@v4
+            with:
+              name: test-results
+              path: test-results.json
+
+
+
+              
